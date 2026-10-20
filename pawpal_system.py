@@ -9,11 +9,17 @@ a list of `Pet`s and can flatten every pet's tasks into one list via
 reads tasks exclusively through `Owner.get_all_tasks()` (never from a
 single `Pet` directly), ranks them by priority, and assigns each one a
 time slot within the day's constraints, producing a plan `explain_plan()`
-can render as a readable timeline.
+can render as a readable timeline. It can also find open gaps directly
+(`find_next_available_slot()`) and use that to bump a freshly-recurring
+task off of a time it now conflicts with (`resolve_recurrence_conflict()`).
+`Task`, `Pet`, and `Owner` each support `to_dict()`/`from_dict()`, and
+`Owner.save_to_json()`/`load_from_json()` persist a whole owner's data
+(pets and tasks included) to a JSON file between runs.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
@@ -63,6 +69,37 @@ class Task:
     def reschedule(self, new_time: time) -> None:
         """Change this task's scheduled time."""
         self.scheduled_time = new_time
+
+    def to_dict(self) -> dict:
+        """Convert this task to a JSON-serializable dict (times/dates become ISO strings)."""
+        return {
+            "task_id": self.task_id,
+            "pet_id": self.pet_id,
+            "description": self.description,
+            "task_type": self.task_type,
+            "duration_minutes": self.duration_minutes,
+            "priority": self.priority,
+            "scheduled_time": self.scheduled_time.isoformat() if self.scheduled_time else None,
+            "recurrence": self.recurrence,
+            "is_completed": self.is_completed,
+            "due_date": self.due_date.isoformat() if self.due_date else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Task":
+        """Rebuild a Task from a dict produced by to_dict()."""
+        return cls(
+            pet_id=data["pet_id"],
+            description=data["description"],
+            task_type=data["task_type"],
+            duration_minutes=data["duration_minutes"],
+            priority=data["priority"],
+            scheduled_time=time.fromisoformat(data["scheduled_time"]) if data.get("scheduled_time") else None,
+            recurrence=data.get("recurrence", "none"),
+            is_completed=data.get("is_completed", False),
+            due_date=date.fromisoformat(data["due_date"]) if data.get("due_date") else None,
+            task_id=data["task_id"],
+        )
 
 
 @dataclass
@@ -117,6 +154,36 @@ class Pet:
         """Remove the task with the given id from this pet."""
         self.tasks = [t for t in self.tasks if t.task_id != task_id]
 
+    def to_dict(self) -> dict:
+        """Convert this pet (and its tasks) to a JSON-serializable dict."""
+        return {
+            "pet_id": self.pet_id,
+            "name": self.name,
+            "species": self.species,
+            "breed": self.breed,
+            "age": self.age,
+            "weight": self.weight,
+            "height": self.height,
+            "health_stats": self.health_stats,
+            "tasks": [t.to_dict() for t in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Pet":
+        """Rebuild a Pet (and its tasks) from a dict produced by to_dict()."""
+        pet = cls(
+            name=data["name"],
+            species=data["species"],
+            breed=data["breed"],
+            age=data["age"],
+            weight=data["weight"],
+            height=data["height"],
+            health_stats=data.get("health_stats", {}),
+            pet_id=data["pet_id"],
+        )
+        pet.tasks = [Task.from_dict(t) for t in data.get("tasks", [])]
+        return pet
+
 
 @dataclass
 class Owner:
@@ -155,6 +222,40 @@ class Owner:
             tasks = [t for t in tasks if t.is_completed == is_completed]
         return tasks
 
+    def to_dict(self) -> dict:
+        """Convert this owner (and every pet/task beneath it) to a JSON-serializable dict."""
+        return {
+            "owner_id": self.owner_id,
+            "name": self.name,
+            "contact_info": self.contact_info,
+            "preferences": self.preferences,
+            "pets": [p.to_dict() for p in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Owner":
+        """Rebuild an Owner (and its pets/tasks) from a dict produced by to_dict()."""
+        owner = cls(
+            name=data["name"],
+            contact_info=data["contact_info"],
+            preferences=data.get("preferences", {}),
+            owner_id=data["owner_id"],
+        )
+        owner.pets = [Pet.from_dict(p) for p in data.get("pets", [])]
+        return owner
+
+    def save_to_json(self, path: str = "data.json") -> None:
+        """Persist this owner and everything beneath it (pets, tasks) to a JSON file."""
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load_from_json(cls, path: str = "data.json") -> "Owner":
+        """Load an owner (and its pets/tasks) previously saved with save_to_json()."""
+        with open(path) as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
 
 class Scheduler:
     _PRIORITY_WEIGHT = {"high": 3, "medium": 2, "low": 1}
@@ -184,10 +285,16 @@ class Scheduler:
         return schedule
 
     def sort_by_priority(self, tasks: list[Task]) -> list[Task]:
-        """Sort tasks by priority (high to low), then by duration (short to long)."""
+        """Sort tasks by priority (high to low), then by scheduled time (earliest first,
+        unscheduled last), then by duration (short to long) as a final tiebreaker."""
         return sorted(
             tasks,
-            key=lambda t: (-self._PRIORITY_WEIGHT.get(t.priority, 0), t.duration_minutes),
+            key=lambda t: (
+                -self._PRIORITY_WEIGHT.get(t.priority, 0),
+                t.scheduled_time is None,
+                t.scheduled_time or time.min,
+                t.duration_minutes,
+            ),
         )
 
     def complete_task(self, owner: Owner, task_id: str) -> Task | None:
@@ -267,6 +374,75 @@ class Scheduler:
                 f"'{a.description}' ({name_a}) vs '{b.description}' ({name_b})"
             )
         return "\n".join(lines)
+
+    def find_next_available_slot(
+        self,
+        tasks: list[Task],
+        duration_minutes: int,
+        day_start: time = time(7, 0),
+        day_end: time = time(21, 0),
+        after: time | None = None,
+    ) -> time | None:
+        """Find the earliest open gap (of at least `duration_minutes`) among `tasks`.
+
+        Walks the already-scheduled, incomplete tasks in time order and checks the
+        gap before each one, then the gap after the last one, against `day_end`.
+        `after` moves the search window forward (e.g. "find me a slot after 2pm")
+        without needing to filter `tasks` yourself. Returns None if nothing in
+        [day_start, day_end] is big enough.
+        """
+        today = date.today()
+        cursor = after if after is not None and after > day_start else day_start
+        needed = timedelta(minutes=duration_minutes)
+
+        scheduled = sorted(
+            (t for t in tasks if t.scheduled_time is not None and not t.is_completed),
+            key=lambda t: t.scheduled_time,
+        )
+        for task in scheduled:
+            task_start, task_end = self._task_interval(task)
+            if task_end.time() <= cursor:
+                continue  # entirely before our search window, doesn't block anything
+            if task_start.time() > cursor and task_start - datetime.combine(today, cursor) >= needed:
+                return cursor
+            cursor = max(cursor, task_end.time())
+            if cursor >= day_end:
+                return None
+
+        if datetime.combine(today, day_end) - datetime.combine(today, cursor) >= needed:
+            return cursor
+        return None
+
+    def resolve_recurrence_conflict(
+        self,
+        owner: Owner,
+        task: Task,
+        day_start: time = time(7, 0),
+        day_end: time = time(21, 0),
+    ) -> bool:
+        """If `task` (typically a freshly-created recurring next-occurrence) overlaps
+        another of the owner's scheduled tasks, move it to the next open slot at or
+        after its current time. Returns True if it was moved, False if it was
+        already conflict-free or no open slot could be found within the day.
+        """
+        if task.scheduled_time is None:
+            return False
+
+        other_tasks = [t for t in owner.get_all_tasks() if t.task_id != task.task_id]
+        if self.check_conflict(task, other_tasks) is None:
+            return False
+
+        slot = self.find_next_available_slot(
+            other_tasks,
+            task.duration_minutes,
+            day_start=day_start,
+            day_end=day_end,
+            after=task.scheduled_time,
+        )
+        if slot is None:
+            return False
+        task.reschedule(slot)
+        return True
 
     @staticmethod
     def _task_interval(task: Task) -> tuple[datetime, datetime]:

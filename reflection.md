@@ -50,6 +50,10 @@ PawPal+ should be able to:
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
 - How did you decide which constraints mattered most?
 
+  `Scheduler` considers three things: each task's `priority` (high/medium/low), its `duration_minutes`, and two constraints passed in at schedule time — a `start_time` for the day and an optional `available_minutes` cap on the total time budget. `generate_schedule()` sorts by priority first, duration second, then walks that order filling the day from `start_time` and skipping any task that would push past `available_minutes`.
+
+  Priority mattered most to me because of what this app is actually for: missing a high-priority task like medication or feeding is a real-world problem for a pet, while a low-priority task like a nail trim slipping to tomorrow isn't. Time constraints come second — they're what make the schedule realistic instead of an idealized list, since an owner only has so many minutes before work or school. Duration is the tiebreaker rather than a primary constraint, so that if two tasks share a priority, the shorter one goes first and more tasks have a chance to fit before the time budget runs out.
+
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
@@ -81,6 +85,24 @@ PawPal+ should be able to:
 
   For verification I didn't just read the code — I ran it. `main.py` builds an owner with two pets and tasks on each, and running it confirmed the printed "Today's Schedule" actually interleaves tasks from both pets by priority rather than grouping them by pet. I also ran the test suite (`pytest`) and caught a real bug that way: the tests passed under `python -m pytest` but failed under the plain `pytest` command the README documents, because the project root wasn't being added to `sys.path`. Actually running the documented command instead of trusting that "tests pass" was what surfaced it; the fix was a `pytest.ini` with `pythonpath = .`.
 
+**c. AI Strategy**
+
+- Which AI coding assistant features were most effective for building your scheduler?
+
+  Two habits did most of the work. First, verifying instead of trusting: rather than accepting a diff or a "this should work" claim, I had the assistant actually execute things — run `main.py` and `pytest`, render the Mermaid UML through `mermaid-cli` to confirm it compiled before I pasted it anywhere, recompile after every edit to `pawpal_system.py`. That caught real problems (the `pytest.ini` path bug above) that reading the code alone wouldn't have. Second, narrow and scoped prompts beat broad ones — asking it to review one specific file for "missing relationships or logic bottlenecks" surfaced the `Pet.tasks` gap and the ambiguous `constraints` parameter; a generic "review my code" pass earlier in the project hadn't caught either.
+
+- Give one example of an AI suggestion you rejected or modified to keep your system design clean.
+
+  The AI's first-pass brainstorm proposed five classes, splitting the daily plan out into its own `Schedule` class alongside `Scheduler`. I rejected that — it would have meant two classes jointly responsible for "what the plan is," with no clear line dividing the logic in `Scheduler` from the data in `Schedule`. I kept the design at four classes instead, with `Scheduler` both building and holding the plan (`generate_schedule()` returns the ordered task list directly, and `explain_plan()` renders whatever list it's given). That keeps the plan as plain data (a `list[Task]`) rather than inventing a bespoke container type for it.
+
+- How did using separate chat sessions for different phases help you stay organized?
+
+  Starting a fresh session for each phase — UML/design, skeleton generation, core implementation, then sorting/filtering/conflict logic, then tests — kept each session's context limited to the one thing it was reviewing. That made it easy to look at one commit's diff (`111ad37` skeletons, `9a358ac` core implementation, `93005bf` sorting/filtering/conflicts, `54261db` tests) and know exactly which phase produced it and why, instead of untangling a single sprawling thread that mixed design debates with implementation details with test output. It also meant a bad turn in one phase (like the rejected five-class brainstorm) didn't linger in context to bias later, unrelated phases.
+
+- Summarize what you learned about being the "lead architect" when collaborating with powerful AI tools.
+
+  The AI is fast and reliable at the things I can specify precisely — implementing a method once its contract is clear, writing tests for a behavior I've named, running verification commands — but it isn't positioned to judge the shape of the system, because it doesn't have my intent for where boundaries should sit. Both of my rejected suggestions (the extra `Schedule` class, the single-pet `generate_schedule()` signature) were locally reasonable — they'd have worked — but each one would have quietly broken a constraint I cared about (a flat four-class design, scheduling that always spans every pet an owner has). Being the lead architect meant holding onto those constraints myself and treating every AI suggestion as a proposal to check against them, not a decision already made — while delegating the actual typing, running, and re-checking to the assistant once the shape was settled.
+
 ---
 
 ## 4. Testing and Verification
@@ -90,10 +112,14 @@ PawPal+ should be able to:
 - What behaviors did you test?
 - Why were these tests important?
 
+  Five tests in `tests/test_pawpal.py` cover the behaviors I trust the least to just "look right" by eye: `sort_by_time()` returning tasks in true chronological order even when they're passed in out of order; `mark_complete()` both flipping `is_completed` and, for a `recurrence="daily"` task, returning a fresh next-day `Task` with the due date advanced by one day; `find_conflicts()` correctly flagging two different tasks scheduled at the identical time; and `Pet.add_task()` actually growing the pet's task list. These mattered because they're exactly the places a small logic mistake (an off-by-one in a date delta, a `<=` instead of `<` in a time comparison, forgetting to append in a list) would silently produce a wrong schedule without throwing an error — the kind of bug you'd only notice by carefully reading the output, which a test catches automatically every time.
+
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
 - What edge cases would you test next if you had more time?
+
+  I'd put myself at 4/5. All 5 tests pass, and between them they cover the behaviors I'd most expect to break silently: chronological sorting, daily recurrence, same-time conflict detection, and basic task/pet bookkeeping. It's not a 5 because I can name specific edge cases I've thought about but haven't written tests for: a schedule that runs past midnight (does `_add_minutes` wrap correctly, and does `explain_plan` still read sensibly?), completing an already-completed recurring task twice (does it create two next-occurrence tasks?), a task with a priority string outside `high`/`medium`/`low` (right now it silently sorts as weight `0` instead of raising), and a task that lands exactly on the `available_minutes` boundary. If I had more time, those four would be the next tests I'd write, roughly in that order since the midnight rollover feels most likely to actually happen to a real user.
 
 ---
 
@@ -103,10 +129,16 @@ PawPal+ should be able to:
 
 - What part of this project are you most satisfied with?
 
+  The part I'm most satisfied with is how I collaborated with Claude rather than just handing the whole thing over. My process was to review each file myself first and brainstorm what I actually wanted the system to do, rather than accepting whatever came out first. After the class skeletons were generated from the UML, I went through them and realized a fair amount was wrong for what I actually wanted — the missing `Pet.tasks` relationship and the ambiguous `constraints` parameter (section 1b) are two concrete examples. Instead of just living with those gaps, I asked Claude to correct them, and then verified the fixes actually worked by testing the result (running `main.py` and the test suite) rather than assuming the correction was right because it compiled. That loop — review, brainstorm what's wrong, ask for a fix, test it — is the habit I'm proudest of, because it meant I stayed the one deciding what "correct" meant for this system instead of outsourcing that judgment.
+
 **b. What you would improve**
 
 - If you had another iteration, what would you improve or redesign?
 
+  I'd tackle the two gaps I already called out elsewhere in this reflection. First, the greedy packing in `generate_schedule()` (section 2b) — I'd add a pass that, after the priority-ordered walk, checks whether any skipped lower-priority task fits in whatever time is left over, instead of just stopping once a task doesn't fit. Second, I'd harden the edge cases from section 4b, especially the unvalidated priority string and the midnight-rollover case, since both could produce a silently wrong schedule rather than a visible error. Beyond logic, I'd also want the app to persist data between runs — right now everything lives in Streamlit's `session_state`, so a page refresh loses every pet and task, which isn't realistic for something meant to be used daily.
+
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+
+  Keeping each class's responsibility narrow and singular paid off every time I touched this codebase. `Pet` only knows about its own identity and task list, `Owner` only aggregates pets, and `Scheduler` is the one place that knows about ordering, conflicts, and time — so when I added filtering, conflict detection, and recurrence partway through the project, each one slotted into exactly one class without rippling changes through the others. That discipline is also what made AI collaboration work well: because each class had one clear job, I could ask Claude to fix or extend one of them in isolation and actually verify the result, instead of having to reason about a tangle of responsibilities every time. The lesson I'm taking forward is that a clean boundary between classes isn't just a design nicety — it's what makes a system reviewable, testable, and safe to hand pieces of to an AI collaborator.

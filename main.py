@@ -1,5 +1,8 @@
 from datetime import time
 
+from tabulate import tabulate
+
+import formatting
 from pawpal_system import Owner, Pet, Scheduler, Task
 
 
@@ -142,6 +145,64 @@ def main() -> None:
     print("==========================")
     warning = scheduler.check_conflict(nail_trim, owner.get_all_tasks())
     print(warning or "No conflict detected.")
+
+    print("\nFormatted Schedule (emojis + table)")
+    print("======================================")
+    rows = [
+        formatting.task_to_row(t, next(p.name for p in owner.pets if p.pet_id == t.pet_id))
+        for t in scheduler.sort_by_time(owner.get_all_tasks())
+    ]
+    print(tabulate(rows, headers="keys", tablefmt="simple"))
+
+    print("\nFind Next Available Slot")
+    print("===========================")
+    slot = scheduler.find_next_available_slot(owner.get_all_tasks(), duration_minutes=15, after=time(9, 0))
+    if slot:
+        print(f"Next open 15-minute slot after 09:00: {slot.strftime('%H:%M')}")
+    else:
+        print("No open 15-minute slot found after 09:00.")
+
+    print("\nRecurrence Conflict Auto-Resolve")
+    print("===================================")
+    medication = Task(
+        pet_id=mochi.pet_id,
+        description="Evening medication",
+        task_type="medication",
+        duration_minutes=10,
+        priority="high",
+        scheduled_time=time(11, 0),
+        recurrence="daily",
+    )
+    mochi.add_task(medication)
+    blocker = Task(
+        pet_id=luna.pet_id,
+        description="Grooming session",
+        task_type="grooming",
+        duration_minutes=30,
+        priority="low",
+        scheduled_time=time(11, 0),
+    )
+    luna.add_task(blocker)
+
+    next_medication = scheduler.complete_task(owner, medication.task_id)
+    print(f"Next occurrence inherited the same time: {next_medication.scheduled_time.strftime('%H:%M')}")
+    print(scheduler.check_conflict(next_medication, owner.get_all_tasks()) or "No conflict before resolving.")
+
+    moved = scheduler.resolve_recurrence_conflict(owner, next_medication)
+    if moved:
+        print(f"Auto-resolved: moved to {next_medication.scheduled_time.strftime('%H:%M')} to avoid the conflict.")
+    else:
+        print("No move was needed or possible.")
+
+    print("\nPersistence (save/load)")
+    print("==========================")
+    owner.save_to_json("data.json")
+    print("Saved current owner, pets, and tasks to data.json")
+    reloaded = Owner.load_from_json("data.json")
+    print(
+        f"Reloaded owner '{reloaded.name}' with {len(reloaded.pets)} pet(s) and "
+        f"{len(reloaded.get_all_tasks())} task(s) from data.json"
+    )
 
 
 if __name__ == "__main__":
