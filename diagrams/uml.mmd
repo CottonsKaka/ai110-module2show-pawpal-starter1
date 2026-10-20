@@ -9,6 +9,7 @@ classDiagram
         +add_pet(pet) None
         +remove_pet(pet_id) None
         +get_pet(pet_id) Pet
+        +get_all_tasks() list
     }
 
     class Pet {
@@ -19,13 +20,17 @@ classDiagram
         +float weight
         +float height
         +dict health_stats
+        +list~Task~ tasks
         +get_info() dict
         +edit_info(updates) None
         +add_health_record(record) None
+        +add_task(task) None
+        +get_tasks() list
+        +remove_task(task_id) None
     }
 
     class Task {
-        +string title
+        +string description
         +string task_type
         +int duration_minutes
         +string priority
@@ -39,11 +44,11 @@ classDiagram
 
     class Scheduler {
         +dict constraints
-        +generate_schedule(pet, tasks, constraints) list
+        +generate_schedule(owner, constraints) list
         +sort_by_priority(tasks) list
         +explain_plan(schedule) string
     }
 
     Owner "1" --> "many" Pet : manages
-    Pet "1" --> "many" Task : needs
-    Scheduler --> Task : schedules
+    Pet "1" *-- "many" Task : owns
+    Scheduler ..> Owner : reads all tasks from
