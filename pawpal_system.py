@@ -29,13 +29,28 @@ class Task:
     scheduled_time: time | None = None
     recurrence: str = "none"
     is_completed: bool = False
+    due_date: date | None = None
     task_id: str = field(default_factory=lambda: str(uuid4()))
 
     _EDITABLE_FIELDS = {"description", "task_type", "duration_minutes", "priority", "recurrence"}
+    _RECURRENCE_DELTA = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
 
-    def mark_complete(self) -> None:
-        """Mark this task as done."""
+    def mark_complete(self) -> "Task | None":
+        """Mark this task as done. If it recurs daily/weekly, return a new Task for the next occurrence."""
         self.is_completed = True
+        delta = self._RECURRENCE_DELTA.get(self.recurrence)
+        if delta is None:
+            return None
+        return Task(
+            pet_id=self.pet_id,
+            description=self.description,
+            task_type=self.task_type,
+            duration_minutes=self.duration_minutes,
+            priority=self.priority,
+            scheduled_time=self.scheduled_time,
+            recurrence=self.recurrence,
+            due_date=(self.due_date or date.today()) + delta,
+        )
 
     def edit_task(self, **updates) -> None:
         """Update one or more editable fields on this task."""
@@ -130,6 +145,16 @@ class Owner:
             all_tasks.extend(pet.get_tasks())
         return all_tasks
 
+    def filter_tasks(self, is_completed: bool | None = None, pet_name: str | None = None) -> list[Task]:
+        """Return tasks matching the given completion status and/or pet name (either filter is optional)."""
+        tasks = self.get_all_tasks()
+        if pet_name is not None:
+            matching_pet_ids = {p.pet_id for p in self.pets if p.name == pet_name}
+            tasks = [t for t in tasks if t.pet_id in matching_pet_ids]
+        if is_completed is not None:
+            tasks = [t for t in tasks if t.is_completed == is_completed]
+        return tasks
+
 
 class Scheduler:
     _PRIORITY_WEIGHT = {"high": 3, "medium": 2, "low": 1}
@@ -163,6 +188,97 @@ class Scheduler:
         return sorted(
             tasks,
             key=lambda t: (-self._PRIORITY_WEIGHT.get(t.priority, 0), t.duration_minutes),
+        )
+
+    def complete_task(self, owner: Owner, task_id: str) -> Task | None:
+        """Mark a task complete and, if it recurs daily/weekly, add its next occurrence to the same pet.
+
+        Returns the newly created next-occurrence Task, or None if the task doesn't recur.
+        Raises ValueError if no task with the given id exists on any of the owner's pets.
+        """
+        for pet in owner.pets:
+            for task in pet.tasks:
+                if task.task_id == task_id:
+                    next_task = task.mark_complete()
+                    if next_task is not None:
+                        pet.add_task(next_task)
+                    return next_task
+        raise ValueError(f"No task found with id {task_id}")
+
+    def check_conflict(self, task: Task, other_tasks: list[Task]) -> str | None:
+        """Lightweight check: does `task` overlap any task in `other_tasks`?
+
+        Scans once, stops at the first overlap found, and returns a warning string
+        instead of raising — safe to call after any reschedule() without risking
+        a crash. Returns None when there's no conflict (or `task` isn't scheduled).
+        """
+        if task.scheduled_time is None:
+            return None
+
+        task_start, task_end = self._task_interval(task)
+        for other in other_tasks:
+            if other.task_id == task.task_id or other.scheduled_time is None or other.is_completed:
+                continue
+            other_start, other_end = self._task_interval(other)
+            if task_start < other_end and other_start < task_end:
+                return (
+                    f"Warning: '{task.description}' at {task.scheduled_time.strftime('%H:%M')} "
+                    f"conflicts with '{other.description}' at {other.scheduled_time.strftime('%H:%M')}."
+                )
+        return None
+
+    def find_conflicts(self, tasks: list[Task]) -> list[tuple[Task, Task]]:
+        """Return every pair of tasks whose scheduled time ranges overlap, across any pet.
+
+        Sorts by start time once, then for each task scans forward only until a
+        later task's start reaches or passes the current task's end — since the
+        list is sorted, every task after that starts even later, so none of them
+        can overlap either. Skips completed tasks so a finished recurring task
+        never conflicts with its own next-occurrence clone.
+        """
+        scheduled = sorted(
+            (t for t in tasks if t.scheduled_time is not None and not t.is_completed),
+            key=lambda t: t.scheduled_time,
+        )
+
+        conflicts: list[tuple[Task, Task]] = []
+        for i, a in enumerate(scheduled):
+            _, a_end = self._task_interval(a)
+            for b in scheduled[i + 1:]:
+                b_start, _ = self._task_interval(b)
+                if b_start >= a_end:
+                    break  # sorted by start time, so no later task can overlap `a` either
+                conflicts.append((a, b))
+        return conflicts
+
+    def explain_conflicts(self, owner: Owner, conflicts: list[tuple[Task, Task]]) -> str:
+        """Render detected conflicts as human-readable lines, naming each task's pet."""
+        if not conflicts:
+            return "No scheduling conflicts detected."
+
+        lines = []
+        for a, b in conflicts:
+            pet_a = owner.get_pet(a.pet_id)
+            pet_b = owner.get_pet(b.pet_id)
+            name_a = pet_a.name if pet_a else a.pet_id
+            name_b = pet_b.name if pet_b else b.pet_id
+            lines.append(
+                f"{a.scheduled_time.strftime('%H:%M')}-{b.scheduled_time.strftime('%H:%M')} overlap: "
+                f"'{a.description}' ({name_a}) vs '{b.description}' ({name_b})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _task_interval(task: Task) -> tuple[datetime, datetime]:
+        """Return a task's (start, end) datetimes, derived from its scheduled time and duration."""
+        start = datetime.combine(date.today(), task.scheduled_time)
+        return start, start + timedelta(minutes=task.duration_minutes)
+
+    def sort_by_time(self, tasks: list[Task]) -> list[Task]:
+        """Sort tasks by their scheduled time (earliest first); unscheduled tasks go last."""
+        return sorted(
+            tasks,
+            key=lambda t: (t.scheduled_time is None, t.scheduled_time or time.min),
         )
 
     def explain_plan(self, schedule: list[Task]) -> str:

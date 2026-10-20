@@ -55,6 +55,10 @@ PawPal+ should be able to:
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
 
+  `generate_schedule()` packs tasks greedily: it sorts all tasks by priority (then duration) once, then walks that fixed order, placing each task in the next open slot and simply skipping any task that no longer fits in the remaining `available_minutes` — it never looks ahead to see whether a shorter, lower-priority task later in the list would fit the leftover gap. That's a simple, fast algorithm (one sort plus one linear pass), but it isn't optimal: a tight time budget can leave a few minutes of unused slack that a true bin-packing approach would have filled.
+
+  I think that tradeoff is reasonable for this app. A pet owner's daily task list is small — a handful of tasks per pet — so the gap between "optimal" and "greedy" packing is at most a few minutes, not a meaningfully different schedule. Implementing real bin-packing would add noticeable complexity for a marginal time-utilization gain, and it would also make the output less predictable to the person reading it: a strictly priority-ordered plan ("highest priority goes first, always") is easier for an owner to trust at a glance than one that's been reshuffled purely to minimize idle time.
+
 ---
 
 ## 3. AI Collaboration
