@@ -67,19 +67,40 @@ Today's Schedule
 
 ## 🧪 Testing PawPal+
 
+Tests live in `tests/test_pawpal.py` and cover the core domain logic end to end:
+
+- **Task completion** — marking a task complete flips `is_completed`.
+- **Pet task tracking** — adding a task to a `Pet` increases its task count.
+- **Sorting correctness** — `Scheduler.sort_by_time()` returns tasks in chronological order, with unscheduled tasks pushed to the end.
+- **Recurrence logic** — completing a `recurrence="daily"` task returns a new `Task` for the next day (via `Task.mark_complete()`).
+- **Conflict detection** — `Scheduler.find_conflicts()` flags two tasks on the same pet scheduled at the same time.
+
 ```bash
 # Run the full test suite:
-pytest
+python -m pytest
 
 # Run with coverage:
-pytest --cov
+python -m pytest --cov
 ```
 
 Sample test output:
 
 ```
-# Paste your pytest output here
+======================================== test session starts ========================================
+platform darwin -- Python 3.14.7, pytest-9.1.1, pluggy-1.7.0
+rootdir: /Users/cottonskaka/Desktop/Codepath/ai110-module2show-pawpal-starter1
+configfile: pytest.ini
+plugins: anyio-4.15.1
+collected 5 items                                                                                   
+
+tests/test_pawpal.py .....                                                                    [100%]
+
+========================================= 5 passed in 0.02s =========================================
 ```
+
+### Confidence Level
+
+⭐⭐⭐⭐☆ (4/5) — All 5 tests pass, covering task completion, pet task tracking, chronological sorting, daily recurrence, and same-time conflict detection. Confidence isn't a full 5 stars because several edge cases discussed during development (midnight rollover in `generate_schedule`, double-completing a recurring task, unknown priority strings, exact-boundary `available_minutes`) are understood but not yet covered by tests.
 
 ## 📐 Smarter Scheduling
 
