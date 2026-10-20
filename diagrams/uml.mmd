@@ -1,15 +1,49 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
+    %% Draft UML for PawPal+. Update this as the implementation evolves.
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Owner {
+        +string name
+        +string contact_info
+        +list~Pet~ pets
+        +dict preferences
+        +add_pet(pet) None
+        +remove_pet(pet_id) None
+        +get_pet(pet_id) Pet
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Pet {
+        +string name
+        +string species
+        +string breed
+        +int age
+        +float weight
+        +float height
+        +dict health_stats
+        +get_info() dict
+        +edit_info(updates) None
+        +add_health_record(record) None
     }
 
-    ClassName --> AnotherClass : relationship
+    class Task {
+        +string title
+        +string task_type
+        +int duration_minutes
+        +string priority
+        +time scheduled_time
+        +string recurrence
+        +bool is_completed
+        +mark_complete() None
+        +edit_task(updates) None
+        +reschedule(new_time) None
+    }
+
+    class Scheduler {
+        +dict constraints
+        +generate_schedule(pet, tasks, constraints) list
+        +sort_by_priority(tasks) list
+        +explain_plan(schedule) string
+    }
+
+    Owner "1" --> "many" Pet : manages
+    Pet "1" --> "many" Task : needs
+    Scheduler --> Task : schedules
